@@ -1,4 +1,4 @@
-// api/websocket.js - Updated for Vercel
+
 import { WebSocketServer } from 'ws';
 
 // In-memory storage (for serverless - consider Redis for production)

@@ -22,6 +22,10 @@ putenv("WEBSOCKET_BROADCAST_URL=$websocket_broadcast_url");
 $_ENV['WEBSOCKET_CLIENT_URL'] = $websocket_client_url;
 $_ENV['WEBSOCKET_BROADCAST_URL'] = $websocket_broadcast_url;
 
+// Store WebSocket URLs for JavaScript injection (used in <head>)
+$GLOBALS['websocket_client_url_js'] = $websocket_client_url;
+$GLOBALS['websocket_broadcast_url_js'] = $websocket_broadcast_url;
+
 // ============================================
 // Database configuration
 $servername = "localhost";
@@ -1379,8 +1383,8 @@ function processRfidDispense($conn, $data) {
       // Set these env vars on your host (Hostinger / Render):
       //   WEBSOCKET_CLIENT_URL = wss://your-websocket-server.com
       //   WEBSOCKET_BROADCAST_URL = https://your-websocket-server.com/broadcast (used by PHP)
-      const WEBSOCKET_URL = '<?php echo htmlspecialchars(getenv("WEBSOCKET_CLIENT_URL") ?: "wss://your-realtime-host.example.com"); ?>';
-      console.log('WebSocket URL configured:', WEBSOCKET_URL);
+      const WEBSOCKET_URL = '<?php echo htmlspecialchars($GLOBALS["websocket_client_url_js"] ?? "wss://websocket-server-ewed.onrender.com"); ?>';
+      console.log('✅ WebSocket URL configured:', WEBSOCKET_URL);
     </script>
     
     <meta charset="UTF-8">
