@@ -175,25 +175,32 @@ if (isset($_GET['action'])) {
             case 'log_temperature':
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $data = json_decode(file_get_contents('php://input'), true);
+        error_log("📥 [log_temperature] Received data: " . json_encode($data));
         
         // Log temperature to database
         $logResult = logTemperature($conn, $data);
+        error_log("💾 [log_temperature] Database result: " . json_encode($logResult));
         
         // Broadcast to WebSocket in real-time if logging was successful
+        $broadcastResponse = null;
         if (isset($logResult['status']) && $logResult['status'] === 'success') {
             $broadcastData = [
                 'temperature' => $data['temperature'] ?? null,
                 'device_id' => $data['device_id'] ?? 'vendo_machine_1',
                 'location' => $data['location'] ?? 'Medicine Storage'
             ];
-            broadcastToWebSocket($broadcastData);
-            error_log("✅ Temperature broadcast sent: " . json_encode($broadcastData));
+            $broadcastResponse = broadcastToWebSocket($broadcastData);
+            error_log("✅ [broadcast] Sent to Render: " . json_encode($broadcastData));
+            error_log("📤 [broadcast] Render response: " . json_encode($broadcastResponse));
+        } else {
+            error_log("⚠️ [log_temperature] Skipped broadcast - logging failed: " . ($logResult['message'] ?? 'Unknown error'));
         }
         
         echo json_encode([
             'status' => 'success',
             'message' => 'Temperature logged successfully',
-            'data' => $logResult
+            'data' => $logResult,
+            'broadcast' => $broadcastResponse
         ]);
     }
     break;
@@ -3973,21 +3980,33 @@ function updateTemperatureAlerts(alerts) {
             wsGlobal.onmessage = function(event) {
                 try {
                     const msg = JSON.parse(event.data);
-                    console.log('📨 Message:', msg.type);
+                    console.log('📨 WebSocket message received:', JSON.stringify(msg));
                     
                     if (msg.type === 'temperature_update') {
                         const temp = parseFloat(msg.data.temperature);
-                        console.log('🌡️ Temperature update: ' + temp.toFixed(1) + '°C');
+                        console.log('✅ 🌡️ Temperature update: ' + temp.toFixed(1) + '°C from ' + msg.data.device_id);
                         
                         // Update UI
                         const el = document.getElementById('temperature-value');
-                        if (el) el.textContent = temp.toFixed(1) + '°C';
+                        if (el) {
+                            el.textContent = temp.toFixed(1) + '°C';
+                            console.log('✅ UI updated with temp: ' + temp.toFixed(1));
+                        } else {
+                            console.warn('⚠️ temperature-value element not found');
+                        }
                         
                         const lastUpdateEl = document.getElementById('temperature-last-update');
-                        if (lastUpdateEl) lastUpdateEl.textContent = new Date().toLocaleTimeString();
+                        if (lastUpdateEl) {
+                            lastUpdateEl.textContent = new Date().toLocaleTimeString();
+                            console.log('✅ Last update timestamp updated');
+                        }
+                    } else if (msg.type === 'connected') {
+                        console.log('✅ Server welcome:', msg.clientId);
+                    } else {
+                        console.log('ℹ️ Unknown message type:', msg.type);
                     }
                 } catch (e) {
-                    console.error('Error parsing WebSocket message:', e);
+                    console.error('❌ Error parsing WebSocket message:', e, 'Raw data:', event.data);
                 }
             };
 
