@@ -3931,7 +3931,13 @@ function updateTemperatureAlerts(alerts) {
         }
     }
 
-    // Real-time WebSocket connection
+    // Real-time WebSocket connection with timeout and fast reconnect
+    let wsGlobal = null;
+    let wsReconnectAttempts = 0;
+    const WS_MAX_RETRIES = 5;
+    const WS_TIMEOUT = 8000; // 8 second timeout to detect slow connections
+    const WS_RECONNECT_DELAY = 2000; // 2 second delay between retries
+    
     function connectWebSocket() {
         const WS_URL = (function(){
             if (typeof WEBSOCKET_URL !== 'undefined' && WEBSOCKET_URL) {
@@ -3942,25 +3948,36 @@ function updateTemperatureAlerts(alerts) {
             return 'wss://websocket-server-ewed.onrender.com';
         })();
 
-        let socket = null;
-        let reconnectAttempts = 0;
-
         try {
-            console.log('🔌 Connecting to WebSocket:', WS_URL);
-            socket = new WebSocket(WS_URL);
+            console.log(`🔌 [Attempt ${wsReconnectAttempts + 1}/${WS_MAX_RETRIES}] Connecting to: ${WS_URL}`);
+            updateConnectionStatus(`⏳ Connecting (${wsReconnectAttempts + 1}/${WS_MAX_RETRIES})...`);
+            
+            wsGlobal = new WebSocket(WS_URL);
+            let connectionTimeout;
+            
+            // Set timeout to detect if connection hangs
+            connectionTimeout = setTimeout(function() {
+                if (wsGlobal && wsGlobal.readyState === WebSocket.CONNECTING) {
+                    console.warn('⏱️ WebSocket connection timeout - closing');
+                    wsGlobal.close();
+                }
+            }, WS_TIMEOUT);
 
-            socket.onopen = function() {
-                console.log('✅ WebSocket connected!');
-                reconnectAttempts = 0;
+            wsGlobal.onopen = function() {
+                clearTimeout(connectionTimeout);
+                console.log('✅ WebSocket connected successfully!');
+                wsReconnectAttempts = 0;
                 updateConnectionStatus('✅ Real-time Connected');
             };
 
-            socket.onmessage = function(event) {
+            wsGlobal.onmessage = function(event) {
                 try {
                     const msg = JSON.parse(event.data);
+                    console.log('📨 Message:', msg.type);
+                    
                     if (msg.type === 'temperature_update') {
                         const temp = parseFloat(msg.data.temperature);
-                        console.log('🌡️ Temperature update:', temp + '°C');
+                        console.log('🌡️ Temperature update: ' + temp.toFixed(1) + '°C');
                         
                         // Update UI
                         const el = document.getElementById('temperature-value');
@@ -3970,27 +3987,40 @@ function updateTemperatureAlerts(alerts) {
                         if (lastUpdateEl) lastUpdateEl.textContent = new Date().toLocaleTimeString();
                     }
                 } catch (e) {
-                    console.error('Error parsing message:', e);
+                    console.error('Error parsing WebSocket message:', e);
                 }
             };
 
-            socket.onclose = function(e) {
-                console.log('🔌 WebSocket closed');
-                updateConnectionStatus('⚠️ Disconnected');
-                if (reconnectAttempts < 5) {
-                    reconnectAttempts++;
-                    setTimeout(connectWebSocket, 3000);
+            wsGlobal.onclose = function(e) {
+                clearTimeout(connectionTimeout);
+                console.log('🔌 WebSocket closed (code: ' + e.code + ', reason: ' + e.reason + ')');
+                updateConnectionStatus('⚠️ Disconnected - Reconnecting...');
+                
+                // Retry connection if max attempts not reached
+                if (wsReconnectAttempts < WS_MAX_RETRIES) {
+                    wsReconnectAttempts++;
+                    console.log(`⏳ Retrying in ${WS_RECONNECT_DELAY}ms...`);
+                    setTimeout(connectWebSocket, WS_RECONNECT_DELAY);
+                } else {
+                    console.error('❌ Max reconnection attempts reached');
+                    updateConnectionStatus('❌ Connection Failed - Max retries reached');
                 }
             };
 
-            socket.onerror = function(event) {
+            wsGlobal.onerror = function(event) {
+                clearTimeout(connectionTimeout);
                 console.error('❌ WebSocket error:', event);
                 updateConnectionStatus('❌ Connection Error');
             };
 
         } catch (err) {
-            console.error('Failed to connect WebSocket:', err);
-            updateConnectionStatus('❌ Connection Failed');
+            console.error('❌ Failed to create WebSocket:', err);
+            updateConnectionStatus('❌ Connection Error');
+            
+            if (wsReconnectAttempts < WS_MAX_RETRIES) {
+                wsReconnectAttempts++;
+                setTimeout(connectWebSocket, WS_RECONNECT_DELAY);
+            }
         }
     }
 
