@@ -1,0 +1,16 @@
+{
+  "name": "vendo-websocket-server",
+  "version": "1.0.0",
+  "description": "Real-time temperature monitoring WebSocket server for Vercel",
+  "main": "api/websocket.js",
+  "scripts": {
+    "dev": "node api/websocket.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "ws": "^8.18.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
