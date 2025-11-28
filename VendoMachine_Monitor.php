@@ -79,6 +79,20 @@ if (isset($_GET['action'])) {
             case 'get_user_records':
                 echo json_encode(getUserRecords($conn));
                 break;
+
+                case 'stream_temperature':
+    header('Content-Type: text/event-stream');
+    header('Cache-Control: no-cache');
+    header('Connection: keep-alive');
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Headers: *');
+    
+    // Get last temperature data
+    $temperatureData = getTemperatureData($conn);
+    
+    echo "data: " . json_encode($temperatureData) . "\n\n";
+    flush();
+    break;
                 
             case 'log_rfid_tap':
                 // Handle both POST form data and JSON input
@@ -161,14 +175,10 @@ if (isset($_GET['action'])) {
         // Your existing database logging
         $logResult = logTemperature($conn, $data);
         
-        // Broadcast to WebSocket
-        $broadcastResult = broadcastToWebSocket($data);
-        
         echo json_encode([
             'status' => 'success',
-            'message' => 'Temperature logged and broadcasted',
-            'database_log' => $logResult,
-            'websocket_broadcast' => $broadcastResult
+            'message' => 'Temperature logged successfully',
+            'data' => $logResult
         ]);
     }
     break;
@@ -3756,17 +3766,18 @@ function updateTemperatureAlerts(alerts) {
 
 // Enhanced WebSocket client for real-time updates
 (function() {
-    const WS_URL = 'wss://vemed.andrieinthesun.com:8080';
+    const WS_URL = 'wss://websocket-server-ewed.onrender.com'; // Your Render WebSocket URL
     let socket = null;
     let reconnectAttempts = 0;
     const maxReconnectAttempts = 5;
 
     function connectWebSocket() {
         try {
+            console.log('🔌 Connecting to Render WebSocket:', WS_URL);
             socket = new WebSocket(WS_URL);
             
             socket.addEventListener('open', () => {
-                console.log('WebSocket connected');
+                console.log('✅ WebSocket connected to Render');
                 reconnectAttempts = 0;
                 
                 // Subscribe to temperature updates
@@ -3785,12 +3796,12 @@ function updateTemperatureAlerts(alerts) {
             });
 
             socket.addEventListener('close', () => {
-                console.log('WebSocket disconnected');
+                console.log('🔌 WebSocket disconnected from Render');
                 attemptReconnect();
             });
 
-            socket.addEventListener('error', (error) => {
-                console.error('WebSocket error:', error);
+            socket.addEventListener('error', (err) => {
+                console.error('❌ WebSocket error:', err);
             });
 
         } catch (error) {
@@ -3803,10 +3814,10 @@ function updateTemperatureAlerts(alerts) {
         if (reconnectAttempts < maxReconnectAttempts) {
             reconnectAttempts++;
             const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-            console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttempts})`);
+            console.log(`🔄 Attempting to reconnect in ${delay}ms (attempt ${reconnectAttempts})`);
             setTimeout(connectWebSocket, delay);
         } else {
-            console.error('Max reconnection attempts reached');
+            console.error('❌ Max reconnection attempts reached');
         }
     }
 
@@ -3826,10 +3837,9 @@ function updateTemperatureAlerts(alerts) {
     }
 
     function updateTemperatureDisplay(tempData) {
-        // Update all temperature displays on the page
-        const elements = document.querySelectorAll('[id*="temperature"]');
+        console.log('🌡️ Real-time temperature update:', tempData);
         
-        // Update main temperature display
+        // Update all temperature displays on the page
         const tempValueEl = document.getElementById('temperature-value');
         if (tempValueEl) {
             tempValueEl.textContent = `${parseFloat(tempData.temperature).toFixed(1)} °C`;
@@ -3857,24 +3867,122 @@ function updateTemperatureAlerts(alerts) {
             lastUpdateEl.textContent = new Date().toLocaleTimeString();
         }
         
+        // Update alert info
+        updateAlertInfo(tempData);
+        
         // Trigger custom event for other components
         window.dispatchEvent(new CustomEvent('temperatureUpdate', {
             detail: tempData
         }));
     }
 
-    // Initialize WebSocket connection when page loads
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', connectWebSocket);
-    } else {
-        connectWebSocket();
+    function updateAlertInfo(tempData) {
+        const alertEl = document.getElementById('temperature-alert-info');
+        const detailAlertEl = document.getElementById('detail-temperature-alert');
+        
+        if (!alertEl || !detailAlertEl) return;
+        
+        const temp = parseFloat(tempData.temperature);
+        const isAlert = tempData.alert;
+        
+        if (isAlert) {
+            alertEl.innerHTML = `
+                <div class="temperature-alert">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    ${tempData.message}
+                </div>
+            `;
+            
+            detailAlertEl.innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    ${tempData.message}
+                </div>
+            `;
+        } else {
+            alertEl.innerHTML = `
+                <div class="temperature-normal">
+                    <i class="fas fa-check-circle me-2"></i>
+                    Temperature within safe range
+                </div>
+            `;
+            
+            detailAlertEl.innerHTML = `
+                <div class="alert alert-success">
+                    <i class="fas fa-check-circle me-2"></i>
+                    Temperature within safe range (15°C - 30°C)
+                </div>
+            `;
+        }
     }
 
-    // Export functions for global access
-    window.WebSocketManager = {
-        reconnect: connectWebSocket,
-        getStatus: () => socket ? socket.readyState : WebSocket.CLOSED
-    };
+    // Real-time WebSocket connection
+    function connectWebSocket() {
+        const WS_URL = (function(){
+            if (typeof WEBSOCKET_URL !== 'undefined' && WEBSOCKET_URL) {
+                console.log('✅ Using configured WebSocket URL:', WEBSOCKET_URL);
+                return WEBSOCKET_URL;
+            }
+            console.warn('⚠️ WEBSOCKET_URL not configured');
+            return 'wss://websocket-server-ewed.onrender.com';
+        })();
+
+        let socket = null;
+        let reconnectAttempts = 0;
+
+        try {
+            console.log('🔌 Connecting to WebSocket:', WS_URL);
+            socket = new WebSocket(WS_URL);
+
+            socket.onopen = function() {
+                console.log('✅ WebSocket connected!');
+                reconnectAttempts = 0;
+                updateConnectionStatus('✅ Real-time Connected');
+            };
+
+            socket.onmessage = function(event) {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'temperature_update') {
+                        const temp = parseFloat(msg.data.temperature);
+                        console.log('🌡️ Temperature update:', temp + '°C');
+                        
+                        // Update UI
+                        const el = document.getElementById('temperature-value');
+                        if (el) el.textContent = temp.toFixed(1) + '°C';
+                        
+                        const lastUpdateEl = document.getElementById('temperature-last-update');
+                        if (lastUpdateEl) lastUpdateEl.textContent = new Date().toLocaleTimeString();
+                    }
+                } catch (e) {
+                    console.error('Error parsing message:', e);
+                }
+            };
+
+            socket.onclose = function(e) {
+                console.log('🔌 WebSocket closed');
+                updateConnectionStatus('⚠️ Disconnected');
+                if (reconnectAttempts < 5) {
+                    reconnectAttempts++;
+                    setTimeout(connectWebSocket, 3000);
+                }
+            };
+
+            socket.onerror = function(event) {
+                console.error('❌ WebSocket error:', event);
+                updateConnectionStatus('❌ Connection Error');
+            };
+
+        } catch (err) {
+            console.error('Failed to connect WebSocket:', err);
+            updateConnectionStatus('❌ Connection Failed');
+        }
+    }
+
+    function updateConnectionStatus(status) {
+        const el = document.getElementById('connection-status');
+        if (el) el.textContent = status;
+    }
 })();
 
 </script>
