@@ -1,4 +1,26 @@
 <?php
+// ============================================
+// Environment Variables Setup for WebSocket
+// ============================================
+// Configure these with your Render server domain
+$websocket_client_url = getenv('WEBSOCKET_CLIENT_URL');
+$websocket_broadcast_url = getenv('WEBSOCKET_BROADCAST_URL');
+
+// If env vars not set, use defaults (update these manually or set via putenv)
+if (!$websocket_client_url) {
+    $websocket_client_url = 'wss://websocket-server-abc123.onrender.com'; // UPDATE THIS
+}
+if (!$websocket_broadcast_url) {
+    $websocket_broadcast_url = 'https://websocket-server-abc123.onrender.com/broadcast'; // UPDATE THIS
+}
+
+// Make available globally
+putenv("WEBSOCKET_CLIENT_URL=$websocket_client_url");
+putenv("WEBSOCKET_BROADCAST_URL=$websocket_broadcast_url");
+$_ENV['WEBSOCKET_CLIENT_URL'] = $websocket_client_url;
+$_ENV['WEBSOCKET_BROADCAST_URL'] = $websocket_broadcast_url;
+
+// ============================================
 // Database configuration
 $servername = "localhost";
 $username = "u792590767_vemed";
@@ -3416,12 +3438,16 @@ function updateTemperatureAlerts(alerts) {
 (function() {
     const WS_URL = (function(){
         // Prefer env-configured client URL if set via a global JS variable injected server-side
-        if (typeof WEBSOCKET_URL !== 'undefined' && WEBSOCKET_URL) return WEBSOCKET_URL;
-        return 'wss://websocket-server-71q6q786m-markandrieremot25-gmailcoms-projects.vercel.app'; // replace with your server
+        if (typeof WEBSOCKET_URL !== 'undefined' && WEBSOCKET_URL) {
+            console.log('Using configured WebSocket URL:', WEBSOCKET_URL);
+            return WEBSOCKET_URL;
+        }
+        console.warn('WEBSOCKET_URL not configured, using fallback (will fail)');
+        return 'wss://your-websocket-server.example.com'; // placeholder - must be configured
     })();
 
     try {
-        const socket = new WebSocket(WS_URL + '/websocket');
+        const socket = new WebSocket(WS_URL);
 
         socket.addEventListener('open', () => {
             console.log('WebSocket connected');
