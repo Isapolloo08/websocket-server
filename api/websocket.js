@@ -3,8 +3,41 @@ import { WebSocketServer } from 'ws';
 
 // In-memory storage (for serverless - consider Redis for production)
 const clients = new Map();
+const devices = new Map();
 let temperatureData = null;
 
+// Device management
+class DeviceManager {
+  constructor() {
+    this.devices = new Map();
+  }
+
+  registerDevice(deviceInfo, clientId) {
+    this.devices.set(deviceInfo.device_id, {
+      ...deviceInfo,
+      clientId,
+      lastSeen: Date.now(),
+      status: 'online'
+    });
+    
+    console.log(`Device registered: ${deviceInfo.device_id} from ${deviceInfo.location}`);
+  }
+
+  updateDeviceStatus(deviceId, status) {
+    const device = this.devices.get(deviceId);
+    if (device) {
+      device.status = status;
+      device.lastSeen = Date.now();
+    }
+  }
+
+  getOnlineDevices() {
+    return Array.from(this.devices.values()).filter(device => 
+      device.status === 'online' && Date.now() - device.lastSeen < 300000 // 5 minutes
+    );
+  }
+}
+const deviceManager = new DeviceManager();
 export default async function handler(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   const pathname = url.pathname;
@@ -19,7 +52,7 @@ export default async function handler(request, response) {
     return;
   }
 
-  try {
+try {
     switch (pathname) {
       case '/websocket':
         if (request.method === 'GET') {
@@ -41,12 +74,20 @@ export default async function handler(request, response) {
         await handleHealthCheck(request, response);
         break;
 
+      case '/devices':
+        await handleDevicesInfo(request, response);
+        break;
+
       case '/clients':
         await handleClientsInfo(request, response);
         break;
 
       case '/temperature':
         await handleTemperatureData(request, response);
+        break;
+
+      case '/send-command':
+        await handleSendCommand(request, response);
         break;
 
       default:
@@ -65,7 +106,6 @@ async function handleWebSocketUpgrade(request, response) {
     handleWebSocketConnection(ws, request);
   });
 }
-
 function handleWebSocketConnection(ws, request) {
   const clientId = generateClientId();
   const clientInfo = {
@@ -73,7 +113,9 @@ function handleWebSocketConnection(ws, request) {
     ws: ws,
     ip: request.headers['x-forwarded-for'] || request.socket.remoteAddress,
     connectedAt: new Date().toISOString(),
-    userAgent: request.headers['user-agent']
+    userAgent: request.headers['user-agent'],
+    type: 'browser', // default type
+    deviceId: null
   };
 
   clients.set(clientId, clientInfo);
@@ -85,7 +127,8 @@ function handleWebSocketConnection(ws, request) {
     type: 'connected',
     clientId: clientId,
     message: 'Connected to Temperature WebSocket Server',
-    timestamp: Date.now()
+    serverTime: new Date().toISOString(),
+    version: '1.0'
   });
 
   // Send current temperature if available
@@ -94,6 +137,16 @@ function handleWebSocketConnection(ws, request) {
       type: 'temperature_update',
       data: temperatureData,
       timestamp: Date.now()
+    });
+  }
+
+  // Send online devices list
+  const onlineDevices = deviceManager.getOnlineDevices();
+  if (onlineDevices.length > 0) {
+    sendToClient(ws, {
+      type: 'devices_online',
+      devices: onlineDevices,
+      count: onlineDevices.length
     });
   }
 
@@ -115,14 +168,13 @@ function handleWebSocketConnection(ws, request) {
   // Start ping-pong
   startPingPong(clientId, ws);
 }
-
 function handleClientMessage(clientId, data) {
   try {
     const message = JSON.parse(data);
+    const client = clients.get(clientId);
     
     switch (message.type) {
       case 'ping':
-        const client = clients.get(clientId);
         if (client && client.ws.readyState === client.ws.OPEN) {
           sendToClient(client.ws, {
             type: 'pong',
@@ -135,6 +187,35 @@ function handleClientMessage(clientId, data) {
         console.log(`Client ${clientId} subscribed to updates`);
         break;
         
+      case 'device_register':
+        // Arduino device registration
+        client.type = 'device';
+        client.deviceId = message.device_id;
+        deviceManager.registerDevice(message, clientId);
+        
+        // Notify all browser clients about new device
+        broadcastToBrowsers({
+          type: 'device_connected',
+          device: message,
+          timestamp: Date.now()
+        });
+        break;
+        
+      case 'temperature_update':
+        // Handle temperature data from Arduino
+        handleTemperatureUpdate(message, clientId);
+        break;
+        
+      case 'request_devices':
+        // Client requesting devices list
+        const onlineDevices = deviceManager.getOnlineDevices();
+        sendToClient(client.ws, {
+          type: 'devices_list',
+          devices: onlineDevices,
+          count: onlineDevices.length
+        });
+        break;
+        
       default:
         console.log(`Unknown message type from ${clientId}:`, message.type);
     }
@@ -143,7 +224,44 @@ function handleClientMessage(clientId, data) {
   }
 }
 
+function handleTemperatureUpdate(message, clientId) {
+  // Update temperature data
+  temperatureData = {
+    ...message,
+    id: generateMessageId(),
+    serverTime: new Date().toISOString(),
+    receivedAt: Date.now(),
+    clientId: clientId
+  };
+
+  // Update device status
+  if (message.device_id) {
+    deviceManager.updateDeviceStatus(message.device_id, 'online');
+  }
+
+  // Broadcast to all browser clients
+  const broadcastCount = broadcastToBrowsers({
+    type: 'temperature_update',
+    data: temperatureData,
+    timestamp: Date.now()
+  });
+
+  console.log(`📊 Temperature ${message.temperature}°C from ${message.device_id} broadcasted to ${broadcastCount} clients`);
+}
 function handleClientDisconnect(clientId, code, reason) {
+  const client = clients.get(clientId);
+  
+  if (client && client.type === 'device' && client.deviceId) {
+    deviceManager.updateDeviceStatus(client.deviceId, 'offline');
+    
+    // Notify browser clients about device disconnect
+    broadcastToBrowsers({
+      type: 'device_disconnected',
+      device_id: client.deviceId,
+      timestamp: Date.now()
+    });
+  }
+  
   clients.delete(clientId);
   console.log(`Client disconnected: ${clientId}. Code: ${code}, Reason: ${reason}. Remaining: ${clients.size}`);
 }
@@ -173,6 +291,112 @@ function startPingPong(clientId, ws) {
   }
 }
 
+function broadcastToBrowsers(message) {
+  const messageString = JSON.stringify(message);
+  let count = 0;
+
+  clients.forEach(client => {
+    if (client.type === 'browser' && client.ws.readyState === client.ws.OPEN) {
+      try {
+        client.ws.send(messageString);
+        count++;
+      } catch (error) {
+        console.error(`Error broadcasting to browser client ${client.id}:`, error);
+      }
+    }
+  });
+
+  return count;
+}
+
+// New endpoint: Send command to device
+async function handleSendCommand(request, response) {
+  try {
+    const body = await getRequestBody(request);
+    const data = JSON.parse(body);
+
+    const { device_id, command, parameters } = data;
+
+    if (!device_id || !command) {
+      response.status(400).json({ 
+        error: 'Missing required fields: device_id and command are required' 
+      });
+      return;
+    }
+
+    // Find device client
+    let targetClient = null;
+    clients.forEach(client => {
+      if (client.deviceId === device_id && client.ws.readyState === client.ws.OPEN) {
+        targetClient = client;
+      }
+    });
+
+    if (!targetClient) {
+      response.status(404).json({ 
+        error: 'Device not found or not connected',
+        device_id: device_id
+      });
+      return;
+    }
+
+    // Send command to device
+    const commandMessage = {
+      type: 'command',
+      command: command,
+      parameters: parameters,
+      timestamp: Date.now()
+    };
+
+    sendToClient(targetClient.ws, JSON.stringify(commandMessage));
+
+    response.status(200).json({
+      success: true,
+      message: 'Command sent to device',
+      device_id: device_id,
+      command: command
+    });
+
+  } catch (error) {
+    console.error('Send command error:', error);
+    response.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// New endpoint: Get devices information
+async function handleDevicesInfo(request, response) {
+  const onlineDevices = deviceManager.getOnlineDevices();
+  
+  response.status(200).json({
+    total: onlineDevices.length,
+    devices: onlineDevices,
+    lastUpdated: new Date().toISOString()
+  });
+}
+
+// Enhanced health check
+async function handleHealthCheck(request, response) {
+  const onlineDevices = deviceManager.getOnlineDevices();
+  const browserClients = Array.from(clients.values()).filter(client => client.type === 'browser');
+  const deviceClients = Array.from(clients.values()).filter(client => client.type === 'device');
+
+  response.status(200).json({
+    status: 'healthy',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    clients: {
+      total: clients.size,
+      browsers: browserClients.length,
+      devices: deviceClients.length
+    },
+    devices: {
+      online: onlineDevices.length,
+      list: onlineDevices
+    },
+    lastTemperature: temperatureData,
+    environment: process.env.NODE_ENV
+  });
+}
 async function handleBroadcast(request, response) {
   try {
     const body = await getRequestBody(request);
@@ -198,17 +422,18 @@ async function handleBroadcast(request, response) {
       ...data,
       id: generateMessageId(),
       serverTime: new Date().toISOString(),
-      receivedAt: Date.now()
+      receivedAt: Date.now(),
+      source: 'http_broadcast'
     };
 
-    // Broadcast to all clients
-    const broadcastCount = broadcastToAll({
+    // Broadcast to all browser clients
+    const broadcastCount = broadcastToBrowsers({
       type: 'temperature_update',
       data: temperatureData,
       timestamp: Date.now()
     });
 
-    console.log(`Broadcasted temperature ${data.temperature}°C to ${broadcastCount} clients`);
+    console.log(`📊 HTTP Broadcast: Temperature ${data.temperature}°C to ${broadcastCount} clients`);
 
     response.status(200).json({
       success: true,
@@ -217,7 +442,8 @@ async function handleBroadcast(request, response) {
       data: {
         temperature: data.temperature,
         alert: data.alert,
-        device_id: data.device_id
+        device_id: data.device_id,
+        timestamp: new Date().toISOString()
       }
     });
 

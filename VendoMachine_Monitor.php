@@ -8,10 +8,12 @@ $websocket_broadcast_url = getenv('WEBSOCKET_BROADCAST_URL');
 
 // If env vars not set, use defaults (update these manually or set via putenv)
 if (!$websocket_client_url) {
-    $websocket_client_url = 'wss://websocket-server-abc123.onrender.com'; // UPDATE THIS
+    // Client must use wss:// for secure WebSocket connections
+    $websocket_client_url = 'wss://websocket-server-ewed.onrender.com'; // UPDATE THIS to your Render service
 }
 if (!$websocket_broadcast_url) {
-    $websocket_broadcast_url = 'https://websocket-server-abc123.onrender.com/broadcast'; // UPDATE THIS
+    // Broadcast endpoint is an HTTPS POST endpoint on the WebSocket host
+    $websocket_broadcast_url = 'https://websocket-server-ewed.onrender.com/broadcast'; // UPDATE THIS
 }
 
 // Make available globally
@@ -359,8 +361,8 @@ function getLatestCard($conn) {
     return $result;
 }
 function broadcastToWebSocket($data) {
-    $defaultUrl = 'https://websocket-server-71q6q786m-markandrieremot25-gmailcoms-projects.vercel.app/broadcast';
-    $vercelWebsocketUrl = getenv('WEBSOCKET_BROADCAST_URL') ? getenv('WEBSOCKET_BROADCAST_URL') : $defaultUrl;
+    // Prefer explicit env var (set via Hostinger .htaccess or putenv). Fallback to sensible Render URL.
+    $vercelWebsocketUrl = getenv('WEBSOCKET_BROADCAST_URL') ?: 'https://websocket-server-ewed.onrender.com/broadcast';
     $apiToken = getenv('WEBSOCKET_API_TOKEN');
 
     $payload = json_encode([
@@ -2424,11 +2426,17 @@ let systemState = {
     lastCardCheck: 0
 };
 let cardCheckInterval;
-// Initialize the monitor
+let temperatureInterval
 document.addEventListener('DOMContentLoaded', function() {
     console.log('VendoMachine Monitor initialized');
-     console.log('Simple RFID system initialized');
-      temperatureInterval = setInterval(updateTemperature, 1000);
+    
+    // Initialize enhanced systems
+    window.RenderWSManager = new RenderWebSocketManager();
+    window.temperatureMonitor = new EnhancedTemperatureMonitor();
+    
+    // Start WebSocket connection
+    window.RenderWSManager.connect();
+    
     // Clear any existing intervals
     if (cardCheckInterval) clearInterval(cardCheckInterval);
     
@@ -2437,6 +2445,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Initial check
     checkCurrentCard();
+    
     // Clear any existing intervals
     if (window.systemInterval) clearInterval(window.systemInterval);
     if (window.cardCheckInterval) clearInterval(window.cardCheckInterval);
@@ -2452,7 +2461,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadInventoryData();
     loadStudentRecords();
     loadRfidCards();
-     updateTemperature();
+    updateTemperature();
     loadTemperatureHistory();
     loadTemperatureAlerts();
     
@@ -2474,11 +2483,320 @@ document.addEventListener('DOMContentLoaded', function() {
                     updateTemperature();
                     loadTemperatureHistory();
                     loadTemperatureAlerts();
-                break;
+                    break;
             }
         });
     });
 });
+
+class RenderWebSocketManager {
+    constructor() {
+        this.socket = null;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
+        this.reconnectDelay = 1000;
+        this.isConnected = false;
+        
+        // Use your Render WebSocket URL - UPDATE THIS!
+        this.wsUrl = 'wss://websocket-server-ewed.onrender.com'; // Your Render WebSocket URL
+    }
+
+    connect() {
+        try {
+            console.log('🔌 Connecting to Render WebSocket:', this.wsUrl);
+            this.socket = new WebSocket(this.wsUrl);
+            
+            this.socket.addEventListener('open', (event) => {
+                this.handleOpen(event);
+            });
+            
+            this.socket.addEventListener('message', (event) => {
+                this.handleMessage(event);
+            });
+            
+            this.socket.addEventListener('close', (event) => {
+                this.handleClose(event);
+            });
+            
+            this.socket.addEventListener('error', (event) => {
+                this.handleError(event);
+            });
+            
+        } catch (error) {
+            console.error('WebSocket connection failed:', error);
+            this.attemptReconnect();
+        }
+    }
+
+    handleOpen(event) {
+        console.log('✅ Connected to Render WebSocket');
+        this.isConnected = true;
+        this.reconnectAttempts = 0;
+        this.reconnectDelay = 1000;
+        
+        // Update UI connection status
+        this.updateConnectionStatus('connected');
+        
+        // Subscribe to temperature updates
+        this.send({
+            type: 'subscribe',
+            timestamp: Date.now()
+        });
+    }
+
+    handleMessage(event) {
+        try {
+            const data = JSON.parse(event.data);
+            this.processMessage(data);
+        } catch (error) {
+            console.error('Error parsing WebSocket message:', error);
+        }
+    }
+
+    handleClose(event) {
+        console.log('🔌 WebSocket disconnected:', event.code, event.reason);
+        this.isConnected = false;
+        this.updateConnectionStatus('disconnected');
+        this.attemptReconnect();
+    }
+
+    handleError(event) {
+        console.error('❌ WebSocket error:', event);
+        this.isConnected = false;
+        this.updateConnectionStatus('error');
+    }
+
+    processMessage(data) {
+        switch (data.type) {
+            case 'connected':
+                console.log('WebSocket connection confirmed:', data.clientId);
+                break;
+                
+            case 'temperature_update':
+                this.handleTemperatureUpdate(data.data);
+                break;
+                
+            case 'ping':
+                this.send({ type: 'pong', timestamp: Date.now() });
+                break;
+                
+            case 'pong':
+                // Connection is healthy
+                break;
+                
+            default:
+                console.log('Unknown message type:', data.type);
+        }
+    }
+
+    handleTemperatureUpdate(tempData) {
+        console.log('🌡️ Real-time temperature update:', tempData);
+        
+        // Update all temperature displays
+        this.updateTemperatureUI(tempData);
+        
+        // Update dashboard stats if needed
+        this.updateDashboardStats(tempData);
+        
+        // Trigger custom event for other components
+        window.dispatchEvent(new CustomEvent('temperatureUpdate', {
+            detail: tempData
+        }));
+    }
+
+    updateTemperatureUI(tempData) {
+        const temp = parseFloat(tempData.temperature);
+        
+        // Update main temperature display
+        const elements = [
+            'temperature-value',
+            'detail-temperature-value'
+        ];
+        
+        elements.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.textContent = `${temp.toFixed(1)} °C`;
+                
+                // Update styling based on temperature
+                if (temp < 15.0) {
+                    el.className = el.className.replace(/temperature-\w+/, 'temperature-danger');
+                } else if (temp > 30.0) {
+                    el.className = el.className.replace(/temperature-\w+/, 'temperature-danger');
+                } else {
+                    el.className = el.className.replace(/temperature-\w+/, 'temperature-ideal');
+                }
+            }
+        });
+        
+        // Update status text
+        const statusEl = document.getElementById('temperature-status-text');
+        if (statusEl && tempData.message) {
+            statusEl.textContent = tempData.message;
+        }
+        
+        // Update last update time
+        const lastUpdateEl = document.getElementById('temperature-last-update');
+        if (lastUpdateEl) {
+            lastUpdateEl.textContent = new Date().toLocaleTimeString();
+        }
+        
+        // Update alert info
+        this.updateAlertInfo(tempData);
+    }
+
+    updateAlertInfo(tempData) {
+        const alertEl = document.getElementById('temperature-alert-info');
+        const detailAlertEl = document.getElementById('detail-temperature-alert');
+        
+        if (!alertEl || !detailAlertEl) return;
+        
+        const temp = parseFloat(tempData.temperature);
+        const isAlert = tempData.alert;
+        
+        if (isAlert) {
+            alertEl.innerHTML = `
+                <div class="temperature-alert">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    ${tempData.message}
+                </div>
+            `;
+            
+            detailAlertEl.innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    ${tempData.message}
+                </div>
+            `;
+        } else {
+            alertEl.innerHTML = `
+                <div class="temperature-normal">
+                    <i class="fas fa-check-circle me-2"></i>
+                    Temperature within safe range
+                </div>
+            `;
+            
+            detailAlertEl.innerHTML = `
+                <div class="alert alert-success">
+                    <i class="fas fa-check-circle me-2"></i>
+                    Temperature within safe range (15°C - 30°C)
+                </div>
+            `;
+        }
+    }
+
+    updateDashboardStats(tempData) {
+        // Update any dashboard statistics that depend on temperature
+        const lastUpdateEl = document.getElementById('last-transaction');
+        if (lastUpdateEl) {
+            lastUpdateEl.textContent = 'Just now';
+        }
+    }
+
+    updateConnectionStatus(status) {
+        const statusEl = document.getElementById('connection-status');
+        if (!statusEl) return;
+        
+        switch (status) {
+            case 'connected':
+                statusEl.textContent = 'Real-time Connected';
+                statusEl.className = 'text-success';
+                break;
+            case 'disconnected':
+                statusEl.textContent = 'Disconnected - Reconnecting...';
+                statusEl.className = 'text-warning';
+                break;
+            case 'error':
+                statusEl.textContent = 'Connection Error';
+                statusEl.className = 'text-danger';
+                break;
+        }
+    }
+
+    send(data) {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify(data));
+        }
+    }
+
+    attemptReconnect() {
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.reconnectAttempts++;
+            this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
+            
+            console.log(`🔄 Attempting reconnect in ${this.reconnectDelay}ms (attempt ${this.reconnectAttempts})`);
+            
+            setTimeout(() => {
+                this.connect();
+            }, this.reconnectDelay);
+        } else {
+            console.error('❌ Max reconnection attempts reached');
+            this.updateConnectionStatus('error');
+        }
+    }
+
+    disconnect() {
+        if (this.socket) {
+            this.socket.close();
+            this.socket = null;
+        }
+        this.isConnected = false;
+    }
+}
+
+// Enhanced Temperature Monitor
+class EnhancedTemperatureMonitor {
+    constructor() {
+        this.wsManager = new RenderWebSocketManager();
+        this.onlineDevices = [];
+        this.currentDevice = null;
+        
+        this.initializeEventListeners();
+    }
+
+    initializeEventListeners() {
+        // Listen for temperature events
+        window.addEventListener('temperatureUpdate', (event) => {
+            this.handleTemperatureData(event.detail);
+        });
+    }
+
+    handleTemperatureData(tempData) {
+        // Update UI with temperature data
+        this.updateTemperatureDisplay(tempData);
+        
+        // Store as current device if not set
+        if (!this.currentDevice && tempData.device_id) {
+            this.currentDevice = tempData.device_id;
+        }
+    }
+
+    updateTemperatureDisplay(tempData) {
+        // This will be handled by the WebSocket manager
+        // Additional custom display logic can go here
+    }
+
+    showNotification(type, message) {
+        const notification = document.createElement('div');
+        notification.className = `alert alert-${type} alert-dismissible fade show`;
+        notification.innerHTML = `
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        `;
+        
+        const container = document.getElementById('notification-area');
+        if (container) {
+            container.appendChild(notification);
+            
+            // Auto remove after 5 seconds
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 5000);
+        }
+    }
+}
 
 async function checkCurrentCard() {
     try {
@@ -2494,6 +2812,7 @@ async function checkCurrentCard() {
         console.error('Card check failed:', error);
     }
 }
+
 // Load inventory data
 async function loadInventoryData() {
     try {
@@ -3170,12 +3489,13 @@ function timeAgo(datetime) {
 
 // Cleanup on page unload
 window.addEventListener('beforeunload', function() {
-        if (temperatureInterval) clearInterval(temperatureInterval);
-
+    if (temperatureInterval) clearInterval(temperatureInterval);
     if (window.systemInterval) clearInterval(window.systemInterval);
     if (window.cardCheckInterval) clearInterval(window.cardCheckInterval);
+    if (window.RenderWSManager) {
+        window.RenderWSManager.disconnect();
+    }
 });
-
 // Add remaining functions (toggleManualEntry, simulateStatus, etc.) from original code...
 function toggleManualEntry() {
     const manualEntry = document.getElementById('manual-entry');
@@ -3434,56 +3754,127 @@ function updateTemperatureAlerts(alerts) {
     `).join('');
 }
 
-// WebSocket client: receives real-time temperature updates
+// Enhanced WebSocket client for real-time updates
 (function() {
-    const WS_URL = (function(){
-        // Prefer env-configured client URL if set via a global JS variable injected server-side
-        if (typeof WEBSOCKET_URL !== 'undefined' && WEBSOCKET_URL) {
-            console.log('Using configured WebSocket URL:', WEBSOCKET_URL);
-            return WEBSOCKET_URL;
-        }
-        console.warn('WEBSOCKET_URL not configured, using fallback (will fail)');
-        return 'wss://your-websocket-server.example.com'; // placeholder - must be configured
-    })();
+    const WS_URL = 'wss://vemed.andrieinthesun.com:8080';
+    let socket = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 5;
 
-    try {
-        const socket = new WebSocket(WS_URL);
+    function connectWebSocket() {
+        try {
+            socket = new WebSocket(WS_URL);
+            
+            socket.addEventListener('open', () => {
+                console.log('WebSocket connected');
+                reconnectAttempts = 0;
+                
+                // Subscribe to temperature updates
+                socket.send(JSON.stringify({
+                    type: 'subscribe_temperature'
+                }));
+            });
 
-        socket.addEventListener('open', () => {
-            console.log('WebSocket connected');
-        });
-
-        socket.addEventListener('message', (event) => {
-            try {
-                const msg = JSON.parse(event.data);
-                if (msg.type === 'temperature_update') {
-                    const t = msg.data;
-                    const el = document.getElementById('current-temp');
-                    if (el && t && typeof t.temperature !== 'undefined') {
-                        el.textContent = parseFloat(t.temperature).toFixed(1) + '°C';
-                    }
-                    // Optionally refresh other UI parts via custom event
-                    window.dispatchEvent(new CustomEvent('temperature_update', { detail: t }));
-                } else if (msg.type === 'connected') {
-                    console.log('Connected as', msg.clientId);
+            socket.addEventListener('message', (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleWebSocketMessage(data);
+                } catch (e) {
+                    console.error('Error parsing WebSocket message:', e);
                 }
-            } catch (e) {
-                console.error('Invalid WS message', e);
-            }
-        });
+            });
 
-        socket.addEventListener('close', (e) => {
-            console.log('WebSocket closed', e);
-            // simple reconnect with delay
-            setTimeout(() => { location.reload(); }, 5000);
-        });
+            socket.addEventListener('close', () => {
+                console.log('WebSocket disconnected');
+                attemptReconnect();
+            });
 
-        socket.addEventListener('error', (err) => {
-            console.error('WebSocket error', err);
-        });
-    } catch (err) {
-        console.error('WebSocket initialization failed', err);
+            socket.addEventListener('error', (error) => {
+                console.error('WebSocket error:', error);
+            });
+
+        } catch (error) {
+            console.error('WebSocket connection failed:', error);
+            attemptReconnect();
+        }
     }
+
+    function attemptReconnect() {
+        if (reconnectAttempts < maxReconnectAttempts) {
+            reconnectAttempts++;
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+            console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttempts})`);
+            setTimeout(connectWebSocket, delay);
+        } else {
+            console.error('Max reconnection attempts reached');
+        }
+    }
+
+    function handleWebSocketMessage(data) {
+        switch (data.type) {
+            case 'temperature_update':
+                updateTemperatureDisplay(data.data);
+                break;
+                
+            case 'system_status':
+                console.log('System status:', data.data);
+                break;
+                
+            default:
+                console.log('Unknown message type:', data.type);
+        }
+    }
+
+    function updateTemperatureDisplay(tempData) {
+        // Update all temperature displays on the page
+        const elements = document.querySelectorAll('[id*="temperature"]');
+        
+        // Update main temperature display
+        const tempValueEl = document.getElementById('temperature-value');
+        if (tempValueEl) {
+            tempValueEl.textContent = `${parseFloat(tempData.temperature).toFixed(1)} °C`;
+            
+            // Update status based on temperature
+            const temp = parseFloat(tempData.temperature);
+            if (temp < 15.0) {
+                tempValueEl.className = 'temperature-display temperature-danger';
+            } else if (temp > 30.0) {
+                tempValueEl.className = 'temperature-display temperature-danger';
+            } else {
+                tempValueEl.className = 'temperature-display temperature-ideal';
+            }
+        }
+        
+        // Update status text
+        const statusEl = document.getElementById('temperature-status-text');
+        if (statusEl && tempData.message) {
+            statusEl.textContent = tempData.message;
+        }
+        
+        // Update last update time
+        const lastUpdateEl = document.getElementById('temperature-last-update');
+        if (lastUpdateEl) {
+            lastUpdateEl.textContent = new Date().toLocaleTimeString();
+        }
+        
+        // Trigger custom event for other components
+        window.dispatchEvent(new CustomEvent('temperatureUpdate', {
+            detail: tempData
+        }));
+    }
+
+    // Initialize WebSocket connection when page loads
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', connectWebSocket);
+    } else {
+        connectWebSocket();
+    }
+
+    // Export functions for global access
+    window.WebSocketManager = {
+        reconnect: connectWebSocket,
+        getStatus: () => socket ? socket.readyState : WebSocket.CLOSED
+    };
 })();
 
 </script>
