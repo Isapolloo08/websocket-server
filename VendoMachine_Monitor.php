@@ -176,8 +176,19 @@ if (isset($_GET['action'])) {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $data = json_decode(file_get_contents('php://input'), true);
         
-        // Your existing database logging
+        // Log temperature to database
         $logResult = logTemperature($conn, $data);
+        
+        // Broadcast to WebSocket in real-time if logging was successful
+        if (isset($logResult['status']) && $logResult['status'] === 'success') {
+            $broadcastData = [
+                'temperature' => $data['temperature'] ?? null,
+                'device_id' => $data['device_id'] ?? 'vendo_machine_1',
+                'location' => $data['location'] ?? 'Medicine Storage'
+            ];
+            broadcastToWebSocket($broadcastData);
+            error_log("✅ Temperature broadcast sent: " . json_encode($broadcastData));
+        }
         
         echo json_encode([
             'status' => 'success',
